@@ -9,7 +9,7 @@ import numpy as np
 if __name__ == '__main__':
 
     # Load model
-    import tops.ps_models.k2a as model_data
+    import tops.ps_models.n45_2025 as model_data
     model = model_data.load()
     model['loads'] = {'DynamicLoadFiltered':  [# model['loads']}
         model['loads'][0] + ['T_g', 'T_b'],

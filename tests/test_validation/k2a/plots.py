@@ -32,7 +32,7 @@ if __name__ == '__main__':
     # PowerFactory result
 
     # os.chdir()
-    pf_res = val_fun.load_pf_res('tests/validation/k2a/powerfactory_res.csv')
+    pf_res = val_fun.load_pf_res('tests/test_validation/k2a/powerfactory_res.csv')
 
     # Python result
     x0 = ps.x0

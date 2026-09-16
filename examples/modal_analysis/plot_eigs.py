@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 if __name__ == '__main__':
 
-    import tops.ps_models.k2a as model_data
+    import tops.ps_models.n45_2025 as model_data
     model = model_data.load()
     ps = dps.PowerSystemModel(model=model)
     ps.init_dyn_sim()

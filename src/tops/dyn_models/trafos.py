@@ -1,5 +1,7 @@
 import numpy as np
 from tops.dyn_models.utils import DAEModel
+from tops.utility_functions import lookup_strings
+from scipy.sparse import lil_matrix
 
 
 class Trafo(DAEModel):
@@ -138,6 +140,52 @@ class Trafo(DAEModel):
     def p_loss_tot(self, x, v):
         return np.sum(np.abs(self.p_line(x, v)))
 
+    def event(self, ps, trafo_name, event_name):
+        trafo_idx = lookup_strings(trafo_name, ps.trafos['Trafo'].par['name'])
+
+        if event_name == 'connect':
+            sign = 1
+            self.connected[trafo_idx] = True
+        elif event_name == 'disconnect':
+            sign = -1
+            self.connected[trafo_idx] = False
+        else:
+            raise ValueError("Unknown transformer event '{}'. Use 'connect' or 'disconnect'.".format(event_name))
+
+        idx_from = self.bus_idx_red['from_bus'][trafo_idx]
+        idx_to = self.bus_idx_red['to_bus'][trafo_idx]
+
+        ratio_from = self.ratio_from_0[trafo_idx]
+        ratio_to = self.ratio_to_0[trafo_idx]
+        admittance = self.admittance[trafo_idx]
+        data = np.array([
+            ratio_from * np.conj(ratio_from) * admittance,
+            ratio_to * np.conj(ratio_to) * admittance,
+            -ratio_from * np.conj(ratio_to) * admittance,
+            -np.conj(ratio_from) * ratio_to * admittance,
+        ])
+
+        buses_in_red_sys = idx_from in ps.bus_idx_red and idx_to in ps.bus_idx_red
+        if buses_in_red_sys:
+            rows_red = np.array([idx_from, idx_to, idx_from, idx_to])
+            cols_red = np.array([idx_from, idx_to, idx_to, idx_from])
+            y_trafo_red = lil_matrix((ps.n_bus_red,) * 2, dtype=complex)
+            y_trafo_red[rows_red, cols_red] = data
+            if hasattr(ps, 'y_bus_red'):
+                ps.y_bus_red += y_trafo_red * sign
+
+        if getattr(ps, 'y_bus_lf', None) is not None:
+            rows_full = np.array([self.bus_idx['from_bus'][trafo_idx],
+                                  self.bus_idx['to_bus'][trafo_idx],
+                                  self.bus_idx['from_bus'][trafo_idx],
+                                  self.bus_idx['to_bus'][trafo_idx]])
+            cols_full = np.array([self.bus_idx['from_bus'][trafo_idx],
+                                  self.bus_idx['to_bus'][trafo_idx],
+                                  self.bus_idx['to_bus'][trafo_idx],
+                                  self.bus_idx['from_bus'][trafo_idx]])
+            ps.y_bus_lf[rows_full, cols_full] += data * sign
+        elif getattr(ps, 'y_bus_lf', None) is None:
+            print('Transformer buses are not in the active system, transformer event failed.')
 
     
 class DynTrafo(Trafo):

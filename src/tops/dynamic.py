@@ -259,6 +259,8 @@ class PowerSystemModel:
         if converged:
             self.power_flow_ready = True
 
+        return converged
+
     def kron_reduction(self, y_bus, keep_buses):
         remove_buses = list(set(range(self.n_bus)) - set(keep_buses))
         y_rr = y_bus[np.ix_(remove_buses, remove_buses)]
@@ -454,6 +456,111 @@ class PowerSystemModel:
         v_red = self.solve_algebraic(t, x)
 
         return self.state_derivatives(t, x, v_red)
+
+    def power_flow_distributed_slack(self, participating_gen_names, angle_ref_bus,
+                                     print_output=False):
+        """Run a power flow with active-power mismatch distributed by droop."""
+        if not self.setup_ready:
+            self.setup()
+
+        if self.y_bus_lf is None:
+            self.build_y_bus_lf()
+
+        bus_type = np.array(['PQ'] * self.n_bus, dtype='<U2')
+        p_pq = np.zeros(self.n_bus)
+        q_pq = np.zeros(self.n_bus)
+        for mdl in self.mdl_instructions['load_flow_pq']:
+            bus_idx, p, q = mdl.load_flow_pq()
+            np.add.at(p_pq, bus_idx, p / self.s_n)
+            np.add.at(q_pq, bus_idx, q / self.s_n)
+
+        p_pv = np.zeros(self.n_bus)
+        v_pv = np.ones(self.n_bus)
+        for mdl in self.mdl_instructions['load_flow_pv']:
+            bus_idx, p, v = mdl.load_flow_pv()
+            bus_type[bus_idx] = 'PV'
+            np.add.at(p_pv, bus_idx, p / self.s_n)
+            v_pv[bus_idx] = v
+
+        angle_ref_idx = dps_uf.lookup_strings(angle_ref_bus, self.buses['name'])
+        if np.isnan(angle_ref_idx):
+            raise ValueError("Unknown angle reference bus '{}'.".format(angle_ref_bus))
+        angle_ref_idx = int(angle_ref_idx)
+
+        gen_mdl = self.gen['GEN']
+        gen_names = gen_mdl.par['name']
+        requested_names = list(participating_gen_names)
+        alpha_by_gen = np.zeros(len(gen_names))
+        inverse_droop = np.zeros(len(gen_names))
+        valid_generator_names = set(gen_names)
+        governor_rows = {}
+        for gov_mdl in getattr(self, 'gov', {}).values():
+            if 'gen' not in gov_mdl.par.dtype.names or 'R' not in gov_mdl.par.dtype.names:
+                continue
+            for row in gov_mdl.par:
+                governor_rows.setdefault(row['gen'], row['R'])
+
+        for gen_name in requested_names:
+            if gen_name not in valid_generator_names:
+                print("Warning: requested generator '{}' was not found; alpha=0.".format(gen_name))
+                continue
+            gen_idx = int(np.flatnonzero(gen_names == gen_name)[0])
+            if gen_name not in governor_rows:
+                print("Warning: requested generator '{}' has no governor; alpha=0.".format(gen_name))
+                continue
+            droop = governor_rows[gen_name]
+            if not np.isfinite(droop) or droop <= 0:
+                print("Warning: requested generator '{}' has invalid droop R={}; alpha=0.".format(gen_name, droop))
+                continue
+            inverse_droop[gen_idx] = 1 / droop
+
+        total_inverse_droop = np.sum(inverse_droop)
+        if total_inverse_droop <= 0:
+            raise ValueError('No participating generator has a valid governor droop.')
+        alpha_by_gen = inverse_droop / total_inverse_droop
+        
+
+        participation = np.zeros(self.n_bus)
+        gen_bus_idx = gen_mdl.bus_idx['terminal']
+        np.add.at(participation, gen_bus_idx, alpha_by_gen)
+        if not np.isclose(np.sum(participation), 1.0):
+            raise ValueError('Generator participation factors did not sum to 1.')
+
+        self.v_0, self.s_0, d_p_pu, converged = dps_uf.newton_raphson_power_flow_distributed_slack(
+            self.y_bus_lf, v_pv, p_pv + p_pq, q_pq, bus_type,
+            participation, angle_ref_idx, self.pf_tol, self.pf_max_it)
+        self.v0 = self.v_0
+        self.dP_distributed_slack = d_p_pu * self.s_n
+        self.distributed_slack_participation = {
+            name: alpha_by_gen[idx] for idx, name in enumerate(gen_names)
+            if name in requested_names
+        }
+
+        pv_units_per_bus = np.zeros(self.n_bus, dtype=int)
+        for mdl in self.mdl_instructions['load_flow_pv']:
+            bus_idx = mdl.load_flow_pv()[0]
+            np.add.at(pv_units_per_bus, bus_idx, 1)
+
+        a = self.s_0.imag + q_pq
+        q_per_pv_unit = np.divide(
+            a, pv_units_per_bus, out=np.zeros_like(a), where=pv_units_per_bus != 0)
+
+        self.load_flow_soln = {}
+        for mdl in self.mdl_instructions['load_flow_pv']:
+            bus_idx, p_setp, v = mdl.load_flow_pv()
+            q = q_per_pv_unit[bus_idx]
+            p = -p_setp / self.s_n
+            if mdl is gen_mdl:
+                # p_sum_bus uses load-minus-generation sign convention.
+                p = p - alpha_by_gen * d_p_pu
+            self.load_flow_soln[mdl] = (p + 1j * q) * self.s_n
+
+        if print_output:
+            print('Distributed-slack active-power imbalance: {:.6f} MW'.format(
+                self.dP_distributed_slack))
+        if converged:
+            self.power_flow_ready = True
+        return converged
 
 
 # if __name__ == '__main__':

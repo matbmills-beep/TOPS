@@ -205,7 +205,6 @@ class DynamicModel:  # This is not used anymore?
     def __init__(self):
         pass
 
-
 class EventManager:
     # Not in use?
     def __init__(self, events, event_function):
@@ -220,5 +219,67 @@ class EventManager:
                 for element_type, name, action in sub_events:
                     self.event_function(element_type, name, action)
                     print(name + ' was ' + action + 'ed.')
+
+
+def newton_raphson_power_flow_distributed_slack(
+        y_bus, v_0, p_sum_bus, q_sum_bus, bus_types,
+        participation, angle_ref_idx, tol, pf_max_it):
+    """Solve a power flow with active-power mismatch participation."""
+    n_bus = len(bus_types)
+    participation = np.asarray(participation, dtype=float)
+    if participation.shape != (n_bus,):
+        raise ValueError('participation must have length n_bus.')
+    if not np.isclose(np.sum(participation), 1.0):
+        raise ValueError('participation factors must sum to 1.')
+    if not 0 <= angle_ref_idx < n_bus:
+        raise ValueError('angle_ref_idx must be a valid bus index.')
+
+    pv_idx = np.where(bus_types == 'PV')[0]
+    pq_idx = np.where(bus_types == 'PQ')[0]
+    variable_angle_idx = np.array([idx for idx in range(n_bus) if idx != angle_ref_idx])
+    pvpq_idx = np.concatenate([pv_idx, pq_idx])
+    if not np.array_equal(np.sort(pvpq_idx), np.arange(n_bus)):
+        raise ValueError("bus_types must contain only 'PV' and 'PQ'.")
+
+    n_angle = len(variable_angle_idx)
+    n_voltage = len(pq_idx)
+    d_p_idx = n_angle + n_voltage
+
+    def x_to_v(x):
+        phi = np.zeros(n_bus)
+        phi[variable_angle_idx] = x[:n_angle]
+        voltage = np.asarray(v_0, dtype=float).copy()
+        voltage[pq_idx] = x[n_angle:n_angle + n_voltage]
+        return voltage * np.exp(1j * phi)
+
+    p_input = np.asarray(p_sum_bus, dtype=float).copy()
+    q_input = np.asarray(q_sum_bus, dtype=float).copy()
+
+    def pf_equations(x):
+        voltage = x_to_v(x)
+        s_calc = voltage * np.conj(y_bus.dot(voltage))
+        d_p = x[d_p_idx]
+        p_err = p_input + participation * d_p + s_calc.real
+        q_err = q_input + s_calc.imag
+        return np.concatenate([p_err, q_err[pq_idx]])
+
+    x = np.zeros(d_p_idx + 1)
+    x[:n_angle] = 0.0
+    x[n_angle:n_angle + n_voltage] = np.asarray(v_0, dtype=float)[pq_idx]
+
+    converged = False
+    for iteration in range(pf_max_it):
+        err = pf_equations(x)
+        if np.max(np.abs(err)) < tol:
+            converged = True
+            break
+        jacobian = jacobian_num(pf_equations, x)
+        x -= np.linalg.solve(jacobian, err)
+    else:
+        print('Warning: Distributed-slack power flow did not converge in {} iterations.'.format(pf_max_it))
+
+    v_sol = x_to_v(x)
+    s_sol = v_sol * np.conj(y_bus.dot(v_sol))
+    return v_sol, s_sol, x[d_p_idx], converged
 
 

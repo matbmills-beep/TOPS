@@ -48,10 +48,22 @@ class Line(DAEModel):
                 cols_red = np.array([idx_from, idx_to, idx_to, idx_from])
                 y_line_red = lil_matrix((ps.n_bus_red,) * 2, dtype=complex)
                 y_line_red[rows_red, cols_red] = data
-                ps.y_bus_red += y_line_red*sign
+                if hasattr(ps, 'y_bus_red'):
+                    ps.y_bus_red += y_line_red*sign
 
-            else:
-                print('Line buses are not in reduced system, line event failed.')
+            if getattr(ps, 'y_bus_lf', None) is not None:
+                rows_full = np.array([self.bus_idx['from_bus'][line_idx],
+                                      self.bus_idx['to_bus'][line_idx],
+                                      self.bus_idx['from_bus'][line_idx],
+                                      self.bus_idx['to_bus'][line_idx]])
+                cols_full = np.array([self.bus_idx['from_bus'][line_idx],
+                                      self.bus_idx['to_bus'][line_idx],
+                                      self.bus_idx['to_bus'][line_idx],
+                                      self.bus_idx['from_bus'][line_idx]])
+                ps.y_bus_lf[rows_full, cols_full] += data*sign
+
+            elif getattr(ps, 'y_bus_lf', None) is None:
+                print('Line buses are not in the active system, line event failed.')
 
     def init_extras(self):
         self.idx_from = self.bus_idx_red['from_bus']

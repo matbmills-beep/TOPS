@@ -27,13 +27,13 @@ if __name__ == '__main__':
     res = defaultdict(list)
     t_0 = time.time()
 
-
+    
     # Run simulation
     while t < t_end:
         sys.stdout.write("\r%d%%" % (t/(t_end)*100))
 
         # simulate a load change
-        if t > 30:
+        if t > 1:
             ps.y_bus_red_mod[8, 8] = 0.1
         else:
             ps.y_bus_red_mod[8, 8] = 0
